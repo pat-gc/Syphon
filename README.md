@@ -19,3 +19,8 @@ and it should look something like this:
 
 after your files are verified, you can find them under media/exports
 
+
+
+Disclaimer:
+
+I vibe coded this in a day so there might be a bug or two i dont know about
