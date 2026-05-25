@@ -8,7 +8,8 @@ __pycache__/
 # Ignore environment files
 .env
 
-
+media/
+data/
 
 # Ignore Python cache
 portable-downloader/__pycache__/
