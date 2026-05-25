@@ -1,0 +1,18 @@
+portable-downloader/media/
+portable-downloader/data/downloads.db
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore environment files
+.env
+
+
+
+# Ignore Python cache
+portable-downloader/__pycache__/
+portable-downloader/*.pyc
+
+# Ignore environment files
+portable-downloader/.env

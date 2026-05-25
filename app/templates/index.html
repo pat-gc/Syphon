@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Brain Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = { darkMode: 'class' }
+    </script>
+</head>
+<body class="bg-gray-900 text-white font-sans min-h-screen p-8">
+
+    <div class="max-w-5xl mx-auto space-y-8">
+        
+        <header class="border-b border-gray-700 pb-4">
+            <h1 class="text-3xl font-bold text-blue-400">🎬 Portable Media Brain</h1>
+            <p class="text-gray-400 mt-2">12x Concurrency • Asynchronous • Local Processing</p>
+        </header>
+
+        <section class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+            <h2 class="text-xl font-semibold mb-4 text-gray-200">Add New Download</h2>
+            <form id="downloadForm" class="space-y-4">
+                <div class="grid grid-cols-3 gap-4">
+                    <div class="col-span-2">
+                        <label class="block text-sm text-gray-400 mb-1">Target URL *</label>
+                        <input type="text" id="url" required placeholder="https://..." class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Custom Filename (Optional)</label>
+                        <input type="text" id="title" placeholder="Avengers_Endgame" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Referer (Optional)</label>
+                        <input type="text" id="referer" placeholder="https://www.fmovies.gd/" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Origin (Optional)</label>
+                        <input type="text" id="origin" placeholder="https://www.fmovies.gd" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+                <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-6 rounded transition-colors">
+                    Add to Queue
+                </button>
+            </form>
+        </section>
+
+        <section class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold text-gray-200">Active Queue</h2>
+                <button onclick="clearHistory()" class="text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 py-1 px-3 rounded border border-gray-600 transition-colors">
+                    🧹 Clear History
+                </button>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="border-b border-gray-700 text-gray-400 text-sm">
+                            <th class="pb-3 px-2 w-12">ID</th>
+                            <th class="pb-3 px-2">Movie / URL</th>
+                            <th class="pb-3 px-2 w-56">Status</th>
+                            <th class="pb-3 px-2">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="taskTableBody" class="text-sm">
+                        </tbody>
+                </table>
+            </div>
+        </section>
+
+    </div>
+
+    <script>
+        document.getElementById('downloadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const payload = {
+                url: document.getElementById('url').value,
+                referer: document.getElementById('referer').value || null,
+                origin: document.getElementById('origin').value || null,
+                title: document.getElementById('title').value || null
+            };
+            await fetch('/api/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            document.getElementById('url').value = '';
+            document.getElementById('title').value = '';
+            fetchTasks(); 
+        });
+
+        async function cancelTask(taskId) {
+            await fetch(`/api/cancel/${taskId}`, { method: 'POST' });
+            fetchTasks();
+        }
+
+        async function clearHistory() {
+            await fetch('/api/clear', { method: 'DELETE' });
+            fetchTasks();
+        }
+
+        async function refreshTask(taskId) {
+            const newUrl = prompt("The CDN token likely expired.\n\nPaste the fresh video URL below to resume the download:");
+            if (!newUrl) return;
+            await fetch(`/api/refresh/${taskId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: newUrl }) });
+            fetchTasks();
+        }
+
+        async function fetchTasks() {
+            try {
+                const response = await fetch('/api/tasks');
+                const tasks = await response.json();
+                const tbody = document.getElementById('taskTableBody');
+
+                // Keep track of active IDs to remove deleted ones
+                const currentIds = new Set(tasks.map(t => 'row-' + t.id));
+
+                tasks.forEach(task => {
+                    const shortUrl = task.url.length > 40 ? task.url.substring(0, 40) + '...' : task.url;
+                    const displayTitle = task.title ? `<span class="font-bold text-gray-200">${task.title}</span><br><span class="text-xs text-gray-500">${shortUrl}</span>` : shortUrl;
+                    
+                    let statusColor = "text-gray-400";
+                    let statusText = task.status;
+                    let actionHtml = `<span class="bg-gray-900 px-2 py-1 rounded border border-gray-600 text-xs">${task.file_path || '...'}</span>`;
+
+                    if(task.status === "QUEUED" || task.status === "DOWNLOADING") {
+                        actionHtml = `<button onclick="cancelTask(${task.id})" class="bg-red-900/50 hover:bg-red-500 text-red-200 text-xs px-3 py-1 rounded border border-red-700 transition-colors">Cancel</button>`;
+                    }
+                    if(task.status === "FAILED" || task.status === "CANCELED") {
+                        actionHtml = `<button onclick="refreshTask(${task.id})" class="bg-blue-900/50 hover:bg-blue-500 text-blue-200 text-xs px-3 py-1 rounded border border-blue-700 transition-colors">🔄 Refresh</button>`;
+                    }
+
+                    if(task.status === "DOWNLOADING") {
+                        statusColor = "text-blue-400";
+                        statusText = `
+                            <div class="font-bold mb-1">DOWNLOADING (${task.progress || '0'}%)</div>
+                            <div class="text-xs text-blue-200/70 flex gap-3">
+                                <span class="w-20">${task.speed ? '⚡ ' + task.speed : ''}</span>
+                                <span class="w-24">${task.size ? '📦 ' + task.size : ''}</span>
+                                <span>${task.eta ? '⏳ ' + task.eta : ''}</span>
+                            </div>
+                        `;
+                    }
+                    if(task.status === "VERIFYING") statusColor = "text-yellow-400 font-bold animate-pulse";
+                    if(task.status === "COMPLETED") statusColor = "text-green-400 font-bold";
+                    if(task.status === "FAILED") statusColor = "text-red-400 font-bold";
+                    if(task.status === "CANCELED") statusColor = "text-gray-600 font-bold";
+
+                    let existingRow = document.getElementById('row-' + task.id);
+                    
+                    // Targeted DOM updates prevent freezing
+                    if (existingRow) {
+                        existingRow.cells[1].innerHTML = displayTitle;
+                        existingRow.cells[2].className = `py-3 px-2 align-top ${statusColor}`;
+                        existingRow.cells[2].innerHTML = statusText;
+                        existingRow.cells[3].innerHTML = actionHtml;
+                    } else {
+                        const newRow = document.createElement('tr');
+                        newRow.id = 'row-' + task.id;
+                        newRow.className = "border-b border-gray-700/50 hover:bg-gray-700/20 transition-colors";
+                        newRow.innerHTML = `
+                            <td class="py-3 px-2 text-gray-500 align-top">#${task.id}</td>
+                            <td class="py-3 px-2 align-top" title="${task.url}">${displayTitle}</td>
+                            <td class="py-3 px-2 align-top ${statusColor}">${statusText}</td>
+                            <td class="py-3 px-2 text-gray-400 align-top">${actionHtml}</td>
+                        `;
+                        tbody.appendChild(newRow);
+                    }
+                });
+
+                // Remove rows that were cleared from the database
+                Array.from(tbody.children).forEach(row => {
+                    if (!currentIds.has(row.id)) row.remove();
+                });
+
+            } catch (error) {
+                console.error("Fetch error:", error);
+            } finally {
+                // Recursive polling: Guarantees we never overwhelm the server
+                setTimeout(fetchTasks, 1500); 
+            }
+        }
+
+        // Start the loop
+        fetchTasks();
+    </script>
+</body>
+</html>

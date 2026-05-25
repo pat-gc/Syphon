@@ -1,0 +1,10 @@
+services:
+  brain:
+    build: .
+    container_name: media-brain
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data     # Maps SQLite DB to your Windows host
+      - ./media:/media       # Maps downloaded videos to your Windows host
+    restart: unless-stopped
