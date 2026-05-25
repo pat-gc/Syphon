@@ -87,12 +87,17 @@ async def process_download(task_id: int, url: str, referer: str, origin: str, ti
     if get_status(task_id) == "CANCELED":
         return
 
-    # NEW: Check if we should skip verification and leave it parked
-    if not auto_verify:
+    # NEW ROBUST LOGIC: Fetch the absolute latest state directly from the DB right before deciding.
+    # This ensures toggles made during the download process are respected.
+    latest_task = get_task(task_id)
+    should_verify = auto_verify
+    if latest_task and 'auto_verify' in latest_task.keys():
+        should_verify = bool(latest_task['auto_verify'])
+
+    if not should_verify:
         update_status(task_id, "AWAITING_VERIFICATION")
         return
 
-    # Otherwise, proceed to automatic verification
     await verify_task(task_id)
 
 
