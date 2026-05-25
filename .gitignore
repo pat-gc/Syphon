@@ -10,7 +10,7 @@ __pycache__/
 
 media/
 data/
-
+portable-downloader/data/downloads.db
 # Ignore Python cache
 portable-downloader/__pycache__/
 portable-downloader/*.pyc
