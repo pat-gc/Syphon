@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 import time
-from database import update_status
+from database import update_status, get_task
 
 YT_DLP_PATH = "/usr/local/bin/yt-dlp"
 ACTIVE_PROCESSES = {}
@@ -32,16 +32,14 @@ async def cancel_task(task_id: int):
         return True
     return False
 
-async def process_download(task_id: int, url: str, referer: str, origin: str, title: str):
+async def process_download(task_id: int, url: str, referer: str, origin: str, title: str, auto_verify: bool = True):
     update_status(task_id, "DOWNLOADING", progress="0", speed="", size="", eta="")
     
-    # 1. Setup Directories
     safe_title = sanitize_filename(title, task_id)
     work_dir = "/media"
     export_dir = "/media/exports"
     os.makedirs(export_dir, exist_ok=True)
     
-    # Download happens in the working directory
     output_template = f"{work_dir}/{safe_title}.%(ext)s"
     
     cmd = [
@@ -49,8 +47,8 @@ async def process_download(task_id: int, url: str, referer: str, origin: str, ti
         "--newline", 
         "--no-check-certificate", 
         "--impersonate", "chrome", 
-        "--continue",           # <--- Tells yt-dlp to resume partial downloads
-        "--no-overwrites",      # <--- Ensures it doesn't overwrite completed files
+        "--continue",
+        "--no-overwrites",
         "-o", output_template
     ]
     if referer: cmd.extend(["--referer", referer])
@@ -62,7 +60,6 @@ async def process_download(task_id: int, url: str, referer: str, origin: str, ti
 
     last_update_time = 0.0
 
-    # 2. Extract telemetry asynchronously
     while True:
         line = await process.stdout.readline()
         if not line: break
@@ -72,18 +69,12 @@ async def process_download(task_id: int, url: str, referer: str, origin: str, ti
             perc_match = re.search(r'(\d+(?:\.\d+)?)%', line_str)
             if perc_match:
                 current_time = time.time()
-                
-                # Throttle database updates to once per second
                 if current_time - last_update_time > 1.0:
                     percentage = perc_match.group(1)
-                    
                     speed_match = re.search(r'at\s+([0-9\.\w]+/s)', line_str)
                     speed = speed_match.group(1) if speed_match else None
-                    
                     size_match = re.search(r'of\s+(.*?)(?:\s+at|\s+\()', line_str)
                     size = size_match.group(1).strip() if size_match else None
-                    
-                    # Extract ETA (e.g., "ETA 04:20" or "ETA Unknown")
                     eta_match = re.search(r'ETA\s+([a-zA-Z0-9:]+)', line_str)
                     eta = eta_match.group(1) if eta_match else None
                     
@@ -93,13 +84,32 @@ async def process_download(task_id: int, url: str, referer: str, origin: str, ti
     if task_id in ACTIVE_PROCESSES:
         del ACTIVE_PROCESSES[task_id]
 
-    # Stop processing if the user explicitly clicked Cancel
     if get_status(task_id) == "CANCELED":
         return
 
+    # NEW: Check if we should skip verification and leave it parked
+    if not auto_verify:
+        update_status(task_id, "AWAITING_VERIFICATION")
+        return
+
+    # Otherwise, proceed to automatic verification
+    await verify_task(task_id)
+
+
+async def verify_task(task_id: int):
+    """Standalone function to verify a downloaded file and export it."""
+    task = get_task(task_id)
+    if not task:
+        return
+        
     update_status(task_id, "VERIFYING")
     
-    # 3. Find file in working directory (Specifically ignoring .part files)
+    safe_title = sanitize_filename(task['title'], task_id)
+    work_dir = "/media"
+    export_dir = "/media/exports"
+    os.makedirs(export_dir, exist_ok=True)
+    
+    # Find the downloaded file
     downloaded_file = None
     for f in os.listdir(work_dir):
         if f.startswith(safe_title + ".") and not f.endswith(".part") and not f.endswith(".ytdl"):
@@ -109,18 +119,16 @@ async def process_download(task_id: int, url: str, referer: str, origin: str, ti
                 break
             
     if not downloaded_file:
-        # The file genuinely doesn't exist. It was a real failure.
         update_status(task_id, "FAILED")
         return
 
-    # 4. Verify and Export (Even if yt-dlp threw an error, if the file exists, we test it!)
+    # Run FFmpeg check
     is_valid = await verify_file(downloaded_file)
     if is_valid:
         final_export_path = os.path.join(export_dir, os.path.basename(downloaded_file))
         shutil.move(downloaded_file, final_export_path)
         update_status(task_id, "COMPLETED", file_path=final_export_path)
     else:
-        # FFmpeg confirmed it's corrupted (verify_file already deleted it)
         update_status(task_id, "FAILED")
 
 def get_status(task_id):

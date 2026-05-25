@@ -5,10 +5,11 @@ import asyncio
 import database
 import downloader
 
-MAX_CONCURRENT_TASKS = 12
+MAX_CONCURRENT_TASKS = 8
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 
-app = FastAPI(title="Portable Media Downloader")
+# Updated title to match your new naming convention
+app = FastAPI(title="Syphon Media Downloader")
 templates = Jinja2Templates(directory="templates")
 
 class DownloadRequest(BaseModel):
@@ -16,17 +17,26 @@ class DownloadRequest(BaseModel):
     referer: str = None
     origin: str = None
     title: str = None
+    auto_verify: bool = True  # NEW: Catch the checkbox state
 
-async def worker(task_id: int, url: str, referer: str, origin: str, title: str):
+class RefreshRequest(BaseModel):
+    url: str
+
+class ToggleVerifyRequest(BaseModel):
+    auto_verify: bool  # NEW: Catch the toggle state from the active queue
+
+async def worker(task_id: int, url: str, referer: str, origin: str, title: str, auto_verify: bool):
     async with semaphore:
-        await downloader.process_download(task_id, url, referer, origin, title)
+        await downloader.process_download(task_id, url, referer, origin, title, auto_verify)
 
 @app.on_event("startup")
 async def startup_event():
     database.init_db()
     pending_tasks = database.get_queued_tasks()
     for task in pending_tasks:
-        asyncio.create_task(worker(task['id'], task['url'], task['referer'], task['origin'], task['title']))
+        # Safely extract the auto_verify state, defaulting to True if missing
+        auto_verify = bool(task['auto_verify']) if 'auto_verify' in task.keys() else True
+        asyncio.create_task(worker(task['id'], task['url'], task['referer'], task['origin'], task['title'], auto_verify))
 
 @app.get("/")
 async def serve_dashboard(request: Request):
@@ -34,8 +44,9 @@ async def serve_dashboard(request: Request):
 
 @app.post("/api/add")
 async def add_link(req: DownloadRequest):
-    task_id = database.add_task(req.url, req.referer, req.origin, req.title)
-    asyncio.create_task(worker(task_id, req.url, req.referer, req.origin, req.title))
+    # Pass the auto_verify flag to the database and the worker
+    task_id = database.add_task(req.url, req.referer, req.origin, req.title, req.auto_verify)
+    asyncio.create_task(worker(task_id, req.url, req.referer, req.origin, req.title, req.auto_verify))
     return {"status": "success", "task_id": task_id}
 
 @app.post("/api/cancel/{task_id}")
@@ -45,26 +56,34 @@ async def cancel_link(task_id: int):
         database.update_status(task_id, "CANCELED")
     return {"status": "canceled"}
 
-class RefreshRequest(BaseModel):
-    url: str
-
 @app.post("/api/refresh/{task_id}")
 async def refresh_link(task_id: int, req: RefreshRequest):
-    # 1. Fetch the old task data (we need the original title, referer, etc.)
     task = database.get_task(task_id)
     if not task:
         return {"status": "error", "msg": "Task not found"}
         
-    # 2. Update the database with the fresh URL
     database.update_task_source(task_id, req.url)
-    
-    # 3. Reset the status so the UI knows it's active again
     database.update_status(task_id, "QUEUED", progress="0", speed="", size="", eta="")
     
-    # 4. Restart the worker. yt-dlp's --continue flag will handle the rest!
-    asyncio.create_task(worker(task_id, req.url, task['referer'], task['origin'], task['title']))
+    # Maintain the previous auto_verify state when refreshing
+    auto_verify = bool(task['auto_verify']) if 'auto_verify' in task.keys() else True
+    asyncio.create_task(worker(task_id, req.url, task['referer'], task['origin'], task['title'], auto_verify))
     
     return {"status": "success"}
+
+@app.post("/api/verify/{task_id}")
+async def verify_link(task_id: int):
+    # NEW: Trigger the standalone verification process asynchronously
+    asyncio.create_task(downloader.verify_task(task_id))
+    return {"status": "verifying"}
+
+@app.post("/api/toggle_verify/{task_id}")
+async def toggle_verify(task_id: int, req: ToggleVerifyRequest):
+    # NEW: Update the database on the fly so the downloader respects the new state before finishing
+    with database.get_db() as conn:
+        conn.execute("UPDATE queue SET auto_verify = ? WHERE id = ?", (int(req.auto_verify), task_id))
+        conn.commit()
+    return {"status": "success", "auto_verify": req.auto_verify}
 
 @app.delete("/api/clear")
 async def clear_history():

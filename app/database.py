@@ -33,19 +33,21 @@ def init_db():
         except sqlite3.OperationalError: pass
         try: conn.execute("ALTER TABLE queue ADD COLUMN size TEXT DEFAULT ''")
         except sqlite3.OperationalError: pass
-        # NEW: Add the ETA column
         try: conn.execute("ALTER TABLE queue ADD COLUMN eta TEXT DEFAULT ''")
         except sqlite3.OperationalError: pass
+        # NEW: Add the auto_verify toggle column
+        try: conn.execute("ALTER TABLE queue ADD COLUMN auto_verify INTEGER DEFAULT 1")
+        except sqlite3.OperationalError: pass
 
-        # Reset all telemetry on startup
+        # Reset interrupted active tasks (Leave 'AWAITING_VERIFICATION' alone, it's a stable state)
         conn.execute("UPDATE queue SET status = 'QUEUED', progress = '0', speed = '', size = '', eta = '' WHERE status IN ('DOWNLOADING', 'VERIFYING')")
         conn.commit()
 
-def add_task(url: str, referer: str = None, origin: str = None, title: str = None):
+def add_task(url: str, referer: str = None, origin: str = None, title: str = None, auto_verify: bool = True):
     with get_db() as conn:
         cursor = conn.execute(
-            "INSERT INTO queue (url, referer, origin, title) VALUES (?, ?, ?, ?)",
-            (url, referer, origin, title)
+            "INSERT INTO queue (url, referer, origin, title, auto_verify) VALUES (?, ?, ?, ?, ?)",
+            (url, referer, origin, title, int(auto_verify))
         )
         conn.commit()
         return cursor.lastrowid
@@ -75,14 +77,12 @@ def get_queued_tasks():
 def clear_history():
     """Deletes inactive tasks from the DB and sweeps their orphaned files from the drive."""
     with get_db() as conn:
-        # 1. Fetch the tasks we are about to delete so we know their filenames
+        # Ignore AWAITING_VERIFICATION so we don't accidentally delete pending files
         tasks_to_delete = conn.execute("SELECT id, title FROM queue WHERE status IN ('COMPLETED', 'FAILED', 'CANCELED')").fetchall()
         
-        # 2. Delete them from the database
         conn.execute("DELETE FROM queue WHERE status IN ('COMPLETED', 'FAILED', 'CANCELED')")
         conn.commit()
 
-    # 3. Garbage Collection: Sweep the /media/ directory
     work_dir = "/media"
     if not os.path.exists(work_dir): 
         return
@@ -91,27 +91,21 @@ def clear_history():
         task_id = task['id']
         title = task['title']
         
-        # Reconstruct the exact filename the downloader would have used
         if not title:
             safe_title = f"movie_{task_id}"
         else:
             safe_title = re.sub(r'[^\w\-_\. ]', '_', title).strip() or f"movie_{task_id}"
 
-        # Delete any files in the working directory that belong to this dead task
         for f in os.listdir(work_dir):
             if f.startswith(safe_title + ".") and os.path.isfile(os.path.join(work_dir, f)):
-                try:
-                    os.remove(os.path.join(work_dir, f))
-                except Exception:
-                    pass # Skip if locked
+                try: os.remove(os.path.join(work_dir, f))
+                except Exception: pass
 
 def get_task(task_id: int):
-    """Retrieves a single task's data so we can reuse the custom title."""
     with get_db() as conn:
         return conn.execute("SELECT * FROM queue WHERE id = ?", (task_id,)).fetchone()
 
 def update_task_source(task_id: int, new_url: str):
-    """Replaces the expired URL with a fresh one."""
     with get_db() as conn:
         conn.execute("UPDATE queue SET url = ? WHERE id = ?", (new_url, task_id))
         conn.commit()

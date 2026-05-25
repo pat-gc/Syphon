@@ -41,6 +41,17 @@
                         <input type="text" id="origin" placeholder="https://www.fmovies.gd" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-blue-500">
                     </div>
                 </div>
+                
+                <div class="bg-gray-900/50 border border-gray-700 p-3 rounded-lg flex items-start">
+                    <div class="flex items-center h-5">
+                        <input id="autoVerify" type="checkbox" checked class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2 cursor-pointer">
+                    </div>
+                    <div class="ml-3 text-sm">
+                        <label for="autoVerify" class="font-medium text-gray-300 cursor-pointer">Auto-Verify Stream</label>
+                        <p class="text-gray-500 text-xs mt-1">Run FFmpeg integrity check immediately after download completes. Uncheck to park in AWAITING_VERIFICATION.</p>
+                    </div>
+                </div>
+
                 <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-6 rounded transition-colors">
                     Add to Queue
                 </button>
@@ -61,7 +72,7 @@
                             <th class="pb-3 px-2 w-12">ID</th>
                             <th class="pb-3 px-2">Movie / URL</th>
                             <th class="pb-3 px-2 w-56">Status</th>
-                            <th class="pb-3 px-2">Action</th>
+                            <th class="pb-3 px-2 w-32">Action</th>
                         </tr>
                     </thead>
                     <tbody id="taskTableBody" class="text-sm">
@@ -79,7 +90,8 @@
                 url: document.getElementById('url').value,
                 referer: document.getElementById('referer').value || null,
                 origin: document.getElementById('origin').value || null,
-                title: document.getElementById('title').value || null
+                title: document.getElementById('title').value || null,
+                auto_verify: document.getElementById('autoVerify').checked // NEW: Passing boolean flag
             };
             await fetch('/api/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             document.getElementById('url').value = '';
@@ -104,13 +116,29 @@
             fetchTasks();
         }
 
+        // NEW: Function to manually trigger verification
+        async function verifyTask(taskId) {
+            await fetch(`/api/verify/${taskId}`, { method: 'POST' });
+            fetchTasks();
+        }
+
+        // NEW: Function to toggle auto-verify state during a live download
+        async function toggleVerify(taskId, currentState) {
+            const newState = !currentState;
+            await fetch(`/api/toggle_verify/${taskId}`, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' }, 
+                body: JSON.stringify({ auto_verify: newState }) 
+            });
+            fetchTasks();
+        }
+
         async function fetchTasks() {
             try {
                 const response = await fetch('/api/tasks');
                 const tasks = await response.json();
                 const tbody = document.getElementById('taskTableBody');
 
-                // Keep track of active IDs to remove deleted ones
                 const currentIds = new Set(tasks.map(t => 'row-' + t.id));
 
                 tasks.forEach(task => {
@@ -119,13 +147,28 @@
                     
                     let statusColor = "text-gray-400";
                     let statusText = task.status;
-                    let actionHtml = `<span class="bg-gray-900 px-2 py-1 rounded border border-gray-600 text-xs">${task.file_path || '...'}</span>`;
+                    let actionHtml = `<span class="bg-gray-900 px-2 py-1 rounded border border-gray-600 text-xs break-all">${task.file_path || '...'}</span>`;
+
+                    // Handle boolean or integer from sqlite for verification state
+                    const isVerifyOn = task.auto_verify === 1 || task.auto_verify === true;
 
                     if(task.status === "QUEUED" || task.status === "DOWNLOADING") {
-                        actionHtml = `<button onclick="cancelTask(${task.id})" class="bg-red-900/50 hover:bg-red-500 text-red-200 text-xs px-3 py-1 rounded border border-red-700 transition-colors">Cancel</button>`;
+                        actionHtml = `
+                            <div class="flex flex-col gap-2">
+                                <button onclick="cancelTask(${task.id})" class="bg-red-900/50 hover:bg-red-500 text-red-200 text-xs px-3 py-1 rounded border border-red-700 transition-colors w-full text-center">Cancel</button>
+                                <button onclick="toggleVerify(${task.id}, ${isVerifyOn})" class="${isVerifyOn ? 'bg-green-900/40 text-green-300 border-green-700 hover:bg-green-700' : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'} text-[10px] uppercase font-bold tracking-wider px-2 py-1 rounded border transition-colors w-full text-center">
+                                    Verify: ${isVerifyOn ? 'ON' : 'OFF'}
+                                </button>
+                            </div>
+                        `;
+                    }
+                    if(task.status === "AWAITING_VERIFICATION") {
+                        statusColor = "text-purple-400 font-bold";
+                        statusText = "AWAITING VERIFICATION";
+                        actionHtml = `<button onclick="verifyTask(${task.id})" class="bg-purple-900/50 hover:bg-purple-500 text-purple-200 text-xs px-3 py-2 rounded border border-purple-700 transition-colors w-full text-center shadow-[0_0_10px_rgba(168,85,247,0.2)]">✨ Verify Now</button>`;
                     }
                     if(task.status === "FAILED" || task.status === "CANCELED") {
-                        actionHtml = `<button onclick="refreshTask(${task.id})" class="bg-blue-900/50 hover:bg-blue-500 text-blue-200 text-xs px-3 py-1 rounded border border-blue-700 transition-colors">🔄 Refresh</button>`;
+                        actionHtml = `<button onclick="refreshTask(${task.id})" class="bg-blue-900/50 hover:bg-blue-500 text-blue-200 text-xs px-3 py-1 rounded border border-blue-700 transition-colors w-full text-center">🔄 Refresh</button>`;
                     }
 
                     if(task.status === "DOWNLOADING") {
@@ -146,7 +189,6 @@
 
                     let existingRow = document.getElementById('row-' + task.id);
                     
-                    // Targeted DOM updates prevent freezing
                     if (existingRow) {
                         existingRow.cells[1].innerHTML = displayTitle;
                         existingRow.cells[2].className = `py-3 px-2 align-top ${statusColor}`;
@@ -166,7 +208,6 @@
                     }
                 });
 
-                // Remove rows that were cleared from the database
                 Array.from(tbody.children).forEach(row => {
                     if (!currentIds.has(row.id)) row.remove();
                 });
@@ -174,12 +215,10 @@
             } catch (error) {
                 console.error("Fetch error:", error);
             } finally {
-                // Recursive polling: Guarantees we never overwhelm the server
                 setTimeout(fetchTasks, 1500); 
             }
         }
 
-        // Start the loop
         fetchTasks();
     </script>
 </body>
